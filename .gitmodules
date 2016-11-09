@@ -1,0 +1,3 @@
+[submodule "aframe-lod"]
+	path = aframe-lod
+	url = git@github.com:mflux/aframe-lod.git
