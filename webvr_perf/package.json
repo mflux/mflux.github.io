@@ -1,0 +1,11 @@
+{
+  "name": "vr_prototypes",
+  "version": "0.0.1",
+  "license": "MIT",
+  "scripts": {
+    "start": "budo --live --verbose --port 8000 --open"
+  },
+  "devDependencies": {
+    "budo": "^7.0.0"
+  }
+}
