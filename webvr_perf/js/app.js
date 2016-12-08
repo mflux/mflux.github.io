@@ -2,6 +2,8 @@
 var stats = new Stats();
 document.body.appendChild( stats.dom );
 
+var vrconsole = createVRConsole( 500, 500 );
+
 const { scene, camera, renderer, events, toggleVR, controllers  } = VRViewer({
   //  triggers entering vr without any input
   autoEnter: false,
@@ -16,9 +18,11 @@ animate();
 
 function init() {
 
-
   stats.mesh.position.set( 0, 1.5, -0.5 );
   scene.add( stats.mesh );
+
+  vrconsole.mesh.position.set( 0.4, 1.5, -0.4 );
+  scene.add( vrconsole.mesh );
 
   var rows = gup().rows;
   var columns = gup().columns;
