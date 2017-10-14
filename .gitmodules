@@ -1,9 +1,6 @@
 [submodule "aframe-lod"]
 	path = aframe-lod
 	url = https://github.com/mflux/aframe-lod
-[submodule "vr-perfume"]
-	path = vr-perfume
-	url = https://github.com/mflux/vr-perfume
 [submodule "dinovr"]
 	path = dinovr
 	url = git@github.com:mflux/dinovr.git
