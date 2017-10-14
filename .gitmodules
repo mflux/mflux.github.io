@@ -3,4 +3,4 @@
 	url = https://github.com/mflux/aframe-lod
 [submodule "dinovr"]
 	path = dinovr
-	url = git@github.com:mflux/dinovr.git
+	url = https://github.com/mflux/dinovr.git
