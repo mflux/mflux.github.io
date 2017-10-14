@@ -4,3 +4,6 @@
 [submodule "vr-perfume"]
 	path = vr-perfume
 	url = https://github.com/mflux/vr-perfume
+[submodule "dinovr"]
+	path = dinovr
+	url = git@github.com:mflux/dinovr.git
