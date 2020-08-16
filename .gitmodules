@@ -4,3 +4,6 @@
 [submodule "dinovr"]
 	path = dinovr
 	url = https://github.com/mflux/dinovr.git
+[submodule "stacks"]
+	path = stacks
+	url = git@github.com:mflux/stacks.git
