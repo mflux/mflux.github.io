@@ -1,8 +1,8 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="CPD">
@@ -13,7 +13,10 @@
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   html,body { margin:0; background:var(--bg); color:var(--ink);
               font:14px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
-  body { padding-bottom:calc(env(safe-area-inset-bottom) + 78px); -webkit-user-select:none; user-select:none; }
+  /* pan-y and nothing else: the page scrolls, but a two-finger pinch is not a zoom. Safari ignores
+     user-scalable=no, so this is what actually stops it. */
+  body { padding-bottom:calc(env(safe-area-inset-bottom) + 78px); -webkit-user-select:none; user-select:none;
+         touch-action:pan-y; }
 
   /* The picture stays put while you scroll the sliders under it - you are judging the render, so it
      never leaves the screen. */
@@ -43,8 +46,10 @@
   .v { color:var(--hot); font-size:17px; font-variant-numeric:tabular-nums; white-space:nowrap; }
 
   /* A 46px-tall track with a big thumb: draggable with a thumb, not a fingernail. */
+  /* touch-action:none so a sideways drag on the track moves the thumb instead of being claimed as
+     a page scroll by the pan-y above. */
   input[type=range] { -webkit-appearance:none; appearance:none; width:100%; height:46px;
-                      background:transparent; margin:0; }
+                      background:transparent; margin:0; touch-action:none; }
   input[type=range]::-webkit-slider-runnable-track { height:5px; border-radius:3px; background:#2b3542; }
   input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:30px; height:30px;
       border-radius:15px; background:var(--hot); border:3px solid #0d1620; margin-top:-13px; }
@@ -78,7 +83,7 @@
 
 <div id="bar"><input id="q" type="search" placeholder="search settings" autocomplete="off"
                      autocapitalize="off" spellcheck="false"></div>
-<div id="list"><div id="msg">loading settingsâ€¦</div></div>
+<div id="list"><div id="msg">loading settings…</div></div>
 
 <footer><span id="n">no changes</span><button id="copy" disabled>send</button></footer>
 
@@ -87,6 +92,8 @@ const $ = s => document.querySelector(s);
 let data = null;
 const dirty = new Map();
 const open = new Set();     // section titles left open, so a rebuild doesn't shut them
+let dragging = false;       // true between a slider's first move and its release
+let sendTimer = null, inFlight = false, pendingReload = null;
 
 /* ---------- settings ---------------------------------------------------------------------------- */
 
@@ -161,11 +168,14 @@ function knobRow(k, section) {
   const sl = document.createElement('input');
   Object.assign(sl, { type: 'range', min: k.min, max: k.max, step: k.step || 0.001, value: cur });
   sl.addEventListener('input', () => {
+    dragging = true;
     out.textContent = fmt(sl.value, k);
     if (+sl.value === k.value) dirty.delete(k.name); else dirty.set(k.name, { value: +sl.value });
     row.classList.toggle('dirty', dirty.has(k.name));
     count();
   });
+  // Sends on release, not per pixel: a drag is one change, and the game is ~1s away.
+  sl.addEventListener('change', () => { dragging = false; queueSend(); });
   row.append(sl);
   return row;
 }
@@ -183,6 +193,7 @@ function toggleRow(t, section) {
     if (next === t.on) dirty.delete(t.name); else dirty.set(t.name, { on: next });
     row.classList.toggle('dirty', dirty.has(t.name));
     count();
+    queueSend();
   };
   return row;
 }
@@ -198,23 +209,33 @@ function count() {
 // token in the page. A watcher on the machine picks it up, applies it and publishes a new render.
 const RELAY = 'https://ntfy.sh/cpd-fefd95de22fb';
 
-$('#copy').onclick = async () => {
+// Letting go of a slider sends. The delay coalesces a flurry - nudging three sliders in a row is one
+// send, not three - and one send is in flight at a time, so a fast hand queues rather than piles up.
+function queueSend() {
+  clearTimeout(sendTimer);
+  sendTimer = setTimeout(send, 350);
+}
+
+async function send() {
+  if (inFlight || !dirty.size) return;
   const text = [...dirty].map(([name, d]) => `${name} = ${'on' in d ? (d.on ? 'on' : 'off') : d.value}`).join('\n');
-  const btn = $('#copy');
-  btn.disabled = true;
-  $('#n').textContent = 'sendingâ€¦';
+  inFlight = true;
+  $('#n').textContent = `sending ${dirty.size}…`;
   try {
     const r = await fetch(RELAY, { method: 'POST', body: text });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     sentAt = Date.now();
-    $('#n').textContent = `sent ${dirty.size} â€” rendering`;
+    $('#n').textContent = 'rendering…';
   } catch (e) {
     // If the relay is unreachable the work isn't lost: hand it over to be pasted instead.
-    $('#n').textContent = 'send failed â€” copy instead';
-    btn.disabled = false;
+    $('#n').textContent = 'send failed — copied instead';
     try { await navigator.clipboard.writeText(text); } catch { prompt('copy this:', text); }
+  } finally {
+    inFlight = false;
   }
-};
+}
+
+$('#copy').onclick = () => { clearTimeout(sendTimer); send(); };
 
 $('#q').addEventListener('input', e => data && render(e.target.value));
 
@@ -231,14 +252,35 @@ async function onRender(m) {
   const meta = JSON.parse(m.message);
   $('#shot').src = m.attachment.url;
   $('#render').classList.remove('empty');
-  $('#rmeta').textContent = meta.note ? `${meta.note} Â· ${meta.stamp}` : meta.stamp;
+  $('#rmeta').textContent = meta.note ? `${meta.note} · ${meta.stamp}` : meta.stamp;
   // The game has taken the changes, so the sliders reload to its real values: a knob snaps to its
   // step, and a rejected one never moved at all.
   if (sentAt) { sentAt = 0; dirty.clear(); count(); }
+
+  // Rebuilding the list while a finger is on a slider would tear the control out from under it, so a
+  // render that lands mid-drag updates the picture now and refreshes the sliders once you let go.
+  if (dragging) { pendingReload = meta.params; return; }
+  await reload(meta.params);
+}
+
+async function reload(params) {
+  pendingReload = null;
   const y = window.scrollY;                    // the rebuild would otherwise throw you back to the top
-  await loadSettings(meta.params);
+  await loadSettings(params);
   window.scrollTo(0, y);
 }
+
+// touch-action:pan-y already refuses pinch and double-tap zoom; these are Safari's older gesture
+// events, which it fires anyway and which would still zoom the page.
+for (const ev of ['gesturestart', 'gesturechange', 'gestureend'])
+  document.addEventListener(ev, e => e.preventDefault(), { passive: false });
+
+// A drag that ends without moving fires no 'change', so the flag is cleared here too.
+document.addEventListener('touchend', () => {
+  if (!dragging) return;
+  dragging = false;
+  if (pendingReload) reload(pendingReload);
+}, { passive: true });
 
 // A held connection rather than a poll: a finished render used to sit unseen for up to 3s, which was
 // the largest slice of the round trip. EventSource reconnects on its own. `since=3h` replays the
@@ -249,4 +291,3 @@ new EventSource(`${RELAY}-r/sse?since=3h`).onmessage = e => {
 </script>
 </body>
 </html>
-
