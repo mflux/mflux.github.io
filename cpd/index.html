@@ -71,6 +71,11 @@
           border-radius:10px; padding:13px 20px; min-height:48px; }
   #copy:disabled { background:#232b36; color:var(--dim); }
   #msg { padding:40px 16px; color:var(--dim); text-align:center; }
+  /* The phone has no devtools, so which leg of the connection failed has to be readable on screen. */
+  #diag { padding:6px 14px; font-size:11px; color:var(--dim); border-bottom:1px solid var(--line);
+          white-space:pre-wrap; }
+  #diag.bad { color:#e08a8a; }
+  #diag.good { color:#7fc98f; }
 </style>
 </head>
 <body>
@@ -83,6 +88,7 @@
 
 <div id="bar"><input id="q" type="search" placeholder="search settings" autocomplete="off"
                      autocapitalize="off" spellcheck="false"></div>
+<div id="diag">relay: connecting…</div>
 <div id="list"><div id="msg">loading settings…</div></div>
 
 <footer><span id="n">no changes</span><button id="copy" disabled>send</button></footer>
@@ -285,18 +291,56 @@ document.addEventListener('touchend', () => {
 // A held connection rather than a poll: a finished render used to sit unseen for up to 3s, which was
 // the largest slice of the round trip. EventSource reconnects on its own. `since=3h` replays the
 // newest render on a cold load and no further - an older message points at an expired attachment.
-let seenRender = false;
-new EventSource(`${RELAY}-r/sse?since=3h`).onmessage = e => {
-  try { const m = JSON.parse(e.data); if (m.attachment?.name === 'shot.jpg') seenRender = true; onRender(m); }
-  catch {}
-};
+let seenRender = false, events = 0;
+const diag = (text, cls = '') => { $('#diag').textContent = text; $('#diag').className = cls; };
+
+// Two ways in, because they fail differently: SSE is instant but a mobile carrier's proxy will
+// happily buffer text/event-stream until nothing ever arrives, while short polls always get through.
+// Whichever delivers a message first wins; ids dedupe the overlap.
+const seenIds = new Set();
+function feed(m) {
+  if (!m.id || seenIds.has(m.id)) return;
+  seenIds.add(m.id);
+  events++;
+  if (m.attachment?.name === 'shot.jpg') seenRender = true;
+  onRender(m);
+}
+
+const es = new EventSource(`${RELAY}-r/sse?since=3h`);
+es.onopen = () => diag('relay: connected (stream)', 'good');
+es.onerror = () => diag(`relay: stream error (readyState ${es.readyState}) — falling back to polling`, 'bad');
+es.onmessage = e => { try { feed(JSON.parse(e.data)); } catch {} };
+
+let since = '3h';
+async function pollOnce() {
+  try {
+    const r = await fetch(`${RELAY}-r/json?poll=1&since=${since}`, { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const text = (await r.text()).trim();
+    if (text) for (const line of text.split('\n')) {
+      const m = JSON.parse(line);
+      since = m.time + 1;
+      feed(m);
+    }
+    if (es.readyState !== 1) diag(`relay: reachable, polling (${events} events)`, 'good');
+  } catch (e) {
+    diag(`relay: UNREACHABLE — ${e.message}\nthe phone cannot reach ntfy.sh (carrier, VPN or a content blocker?)`, 'bad');
+  }
+  setTimeout(pollOnce, 2000);
+}
+pollOnce();
 
 // Nothing replayed means the backlog aged out or the desktop restarted. Ask for the current state
 // rather than sitting on "loading settings" forever, and say so plainly if nobody answers.
-setTimeout(() => {
+setTimeout(async () => {
   if (seenRender) return;
   $('#msg').textContent = 'asking the game for its current state…';
-  fetch(RELAY, { method: 'POST', body: 'ping' }).catch(() => {});
+  try {
+    const r = await fetch(RELAY, { method: 'POST', body: 'ping' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+  } catch (e) {
+    diag(`relay: send FAILED — ${e.message}\nthe phone cannot reach ntfy.sh`, 'bad');
+  }
   setTimeout(() => {
     if (!seenRender) $('#msg').textContent = 'no answer — is the game running with --remote, and the watcher up?';
   }, 12000);
