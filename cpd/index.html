@@ -43,11 +43,26 @@
   #n { flex:1; color:var(--dim); }
   #setup { padding:12px; }
   .hide { display:none !important; }
+  /* The render rides at the top so the picture and the sliders share one screen. Fetched from
+     raw.githubusercontent, which serves a push instantly - Pages itself takes ~40s to rebuild. */
+  #render { position:sticky; top:0; z-index:4; background:#000; border-bottom:1px solid var(--line); }
+  #render img { display:block; width:100%; aspect-ratio:16/9; object-fit:contain; background:#000; }
+  #render.empty img { display:none; }
+  #rmeta { position:absolute; left:8px; bottom:6px; font-size:10px; color:var(--dim);
+           text-shadow:0 1px 3px #000; pointer-events:none; }
+  #rwait { padding:22px 12px; color:var(--dim); text-align:center; font-size:12px; }
+  #render:not(.empty) #rwait { display:none; }
   h1 { font-size:14px; margin:0 0 8px; font-weight:600; }
   p.help { color:var(--dim); margin:0 0 10px; }
 </style>
 </head>
 <body>
+
+<div id="render" class="empty">
+  <img id="shot" alt="latest render">
+  <div id="rmeta"></div>
+  <div id="rwait">no render yet — send your changes and one will appear here</div>
+</div>
 
 <div id="setup">
   <h1>CPD knobs</h1>
@@ -198,6 +213,31 @@ $('#copy').onclick = async () => {
 };
 
 $('#q').addEventListener('input', e => data && render(e.target.value));
+
+/* ---------- live render ------------------------------------------------------------------------ */
+
+// state.json is a few bytes and carries the stamp of the newest capture; the PNG is only refetched
+// when that stamp moves. Both are cache-busted because raw sends max-age=300 to the browser even
+// though the origin itself is always fresh.
+const LIVE = 'https://raw.githubusercontent.com/mflux/mflux.github.io/master/cpd/live';
+let shownStamp = null;
+
+async function pollRender() {
+  try {
+    const r = await fetch(`${LIVE}/state.json?t=${Date.now()}`, { cache: 'no-store' });
+    if (r.ok) {
+      const s = await r.json();
+      if (s.stamp && s.stamp !== shownStamp) {
+        shownStamp = s.stamp;
+        $('#shot').src = `${LIVE}/shot.png?t=${encodeURIComponent(s.stamp)}`;
+        $('#render').classList.remove('empty');
+        $('#rmeta').textContent = s.note ? `${s.note} · ${s.stamp}` : s.stamp;
+      }
+    }
+  } catch {}                                   // offline or not published yet: just try again
+  setTimeout(pollRender, 3000);
+}
+pollRender();
 
 const saved = localStorage.getItem(KEY);
 if (saved) boot(saved, false);
