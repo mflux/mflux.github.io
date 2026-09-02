@@ -15,7 +15,7 @@
               font:14px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
   /* pan-y and nothing else: the page scrolls, but a two-finger pinch is not a zoom. Safari ignores
      user-scalable=no, so this is what actually stops it. */
-  body { padding-bottom:calc(env(safe-area-inset-bottom) + 78px); -webkit-user-select:none; user-select:none;
+  body { padding-bottom:env(safe-area-inset-bottom); -webkit-user-select:none; user-select:none;
          touch-action:pan-y; }
 
   /* The picture stays put while you scroll the sliders under it - you are judging the render, so it
@@ -62,14 +62,6 @@
                       border-radius:13px; background:#dfe7ef; transition:transform .15s; }
   .sw.on .track::after { transform:translateX(22px); }
 
-  footer { position:fixed; left:0; right:0; bottom:0; z-index:6; background:#111620;
-           border-top:1px solid var(--line); display:flex; gap:10px; align-items:center;
-           padding:12px calc(env(safe-area-inset-right) + 12px)
-                   calc(env(safe-area-inset-bottom) + 12px) calc(env(safe-area-inset-left) + 12px); }
-  #n { flex:1; color:var(--dim); font-size:13px; }
-  #copy { font:inherit; font-weight:600; color:#fff; background:#2f6f9f; border:0;
-          border-radius:10px; padding:13px 20px; min-height:48px; }
-  #copy:disabled { background:#232b36; color:var(--dim); }
   #msg { padding:40px 16px; color:var(--dim); text-align:center; }
   /* The phone has no devtools, so which leg of the connection failed has to be readable on screen. */
   #diag { padding:6px 14px; font-size:11px; color:var(--dim); border-bottom:1px solid var(--line);
@@ -91,7 +83,6 @@
 <div id="diag">relay: connecting…</div>
 <div id="list"><div id="msg">loading settings…</div></div>
 
-<footer><span id="n">no changes</span><button id="copy" disabled>send</button></footer>
 
 <script>
 const $ = s => document.querySelector(s);
@@ -206,9 +197,15 @@ function toggleRow(t, section) {
 
 /* ---------- hand back ---------------------------------------------------------------------------- */
 
+// One line carries everything the old footer did. What you need to know changes with the moment:
+// mid-send it is progress, with unsent edits it is the count, and otherwise it is the relay's health.
+let relayLine = 'relay: connecting…', relayCls = '', busyLine = '';
+
 function count() {
-  $('#n').textContent = dirty.size ? `${dirty.size} changed` : 'no changes';
-  $('#copy').disabled = !dirty.size;
+  const el = $('#diag');
+  if (busyLine) { el.textContent = busyLine; el.className = ''; }
+  else if (dirty.size) { el.textContent = `${dirty.size} changed`; el.className = ''; }
+  else { el.textContent = relayLine; el.className = relayCls; }
 }
 
 // Posted to a public relay that accepts anonymous writes, which is what lets this work without a
@@ -226,22 +223,21 @@ async function send() {
   if (inFlight || !dirty.size) return;
   const text = [...dirty].map(([name, d]) => `${name} = ${'on' in d ? (d.on ? 'on' : 'off') : d.value}`).join('\n');
   inFlight = true;
-  $('#n').textContent = `sending ${dirty.size}…`;
+  busyLine = `sending ${dirty.size}…`; count();
   try {
     const r = await fetch(RELAY, { method: 'POST', body: text });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     sentAt = Date.now();
-    $('#n').textContent = 'rendering…';
+    busyLine = 'rendering…'; count();
   } catch (e) {
     // If the relay is unreachable the work isn't lost: hand it over to be pasted instead.
-    $('#n').textContent = 'send failed — copied instead';
+    busyLine = '';
+    diag(`relay: send FAILED — ${e.message} (copied to the clipboard instead)`, 'bad');
     try { await navigator.clipboard.writeText(text); } catch { prompt('copy this:', text); }
   } finally {
     inFlight = false;
   }
 }
-
-$('#copy').onclick = () => { clearTimeout(sendTimer); send(); };
 
 $('#q').addEventListener('input', e => data && render(e.target.value));
 
@@ -261,7 +257,8 @@ async function onRender(m) {
   $('#rmeta').textContent = meta.note ? `${meta.note} · ${meta.stamp}` : meta.stamp;
   // The game has taken the changes, so the sliders reload to its real values: a knob snaps to its
   // step, and a rejected one never moved at all.
-  if (sentAt) { sentAt = 0; dirty.clear(); count(); }
+  if (sentAt) { sentAt = 0; dirty.clear(); }
+  busyLine = ''; count();                      // the render is the end of the send
 
   // Rebuilding the list while a finger is on a slider would tear the control out from under it, so a
   // render that lands mid-drag updates the picture now and refreshes the sliders once you let go.
@@ -292,7 +289,7 @@ document.addEventListener('touchend', () => {
 // the largest slice of the round trip. EventSource reconnects on its own. `since=3h` replays the
 // newest render on a cold load and no further - an older message points at an expired attachment.
 let seenRender = false, events = 0;
-const diag = (text, cls = '') => { $('#diag').textContent = text; $('#diag').className = cls; };
+const diag = (text, cls = '') => { relayLine = text; relayCls = cls; count(); };
 
 // Two ways in, because they fail differently: SSE is instant but a mobile carrier's proxy will
 // happily buffer text/event-stream until nothing ever arrives, while short polls always get through.
