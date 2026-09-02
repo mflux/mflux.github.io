@@ -84,16 +84,15 @@
 
 <script>
 const $ = s => document.querySelector(s);
-const LIVE = 'https://raw.githubusercontent.com/mflux/mflux.github.io/master/cpd/live';
 let data = null;
 const dirty = new Map();
 const open = new Set();     // section titles left open, so a rebuild doesn't shut them
 
 /* ---------- settings ---------------------------------------------------------------------------- */
 
-async function loadSettings(file) {
+async function loadSettings(url) {
   try {
-    const r = await fetch(`${LIVE}/${file}`, { cache: 'no-store' });
+    const r = await fetch(url, { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     if (!d || !Array.isArray(d.sections)) throw new Error('unexpected shape');
@@ -221,39 +220,32 @@ $('#q').addEventListener('input', e => data && render(e.target.value));
 
 /* ---------- live render -------------------------------------------------------------------------- */
 
-// A few bytes of state carry the newest capture's stamp; the PNG is only refetched when it moves.
-// Filenames arrive over the relay rather than from an index file, because raw.githubusercontent
-// caches a path for 300s and ignores query strings - polling a fixed name would show a render up to
-// five minutes late. Every capture publishes new names, and a new path is never cached.
-let sentAt = 0, since = '12h';
+let sentAt = 0;
 
-async function pollRender() {
-  try {
-    const r = await fetch(`${RELAY}-r/json?poll=1&since=${since}`, { cache: 'no-store' });
-    const text = (await r.text()).trim();
-    if (text) {
-      // On a cold load `since=12h` replays the backlog; only the newest describes the current state.
-      const msgs = text.split('\n').map(l => JSON.parse(l)).filter(m => m.event === 'message');
-      if (msgs.length) {
-        const last = msgs[msgs.length - 1];
-        since = last.time + 1;
-        const m = JSON.parse(last.message);
-        $('#shot').src = `${LIVE}/${m.shot}`;
-        $('#render').classList.remove('empty');
-        $('#rmeta').textContent = m.note ? `${m.note} Â· ${m.stamp}` : m.stamp;
-        // The game has taken the changes, so the sliders reload to its real values: a knob snaps to
-        // its step, and a rejected one never moved at all.
-        if (sentAt) { sentAt = 0; dirty.clear(); count(); }
-        const y = window.scrollY;              // the rebuild would otherwise throw you back to the top
-        await loadSettings(m.params);
-        window.scrollTo(0, y);
-      }
-    }
-  } catch {}
-  setTimeout(pollRender, 3000);
+// The render arrives as a relay attachment, so it never touches a repo and expires on its own after
+// a few hours.
+async function onRender(m) {
+  // Two messages make a render: the settings, then the capture carrying the metadata. Only the
+  // second describes a whole render, so the first is skipped.
+  if (m.event !== 'message' || m.attachment?.name !== 'shot.jpg') return;
+  const meta = JSON.parse(m.message);
+  $('#shot').src = m.attachment.url;
+  $('#render').classList.remove('empty');
+  $('#rmeta').textContent = meta.note ? `${meta.note} Â· ${meta.stamp}` : meta.stamp;
+  // The game has taken the changes, so the sliders reload to its real values: a knob snaps to its
+  // step, and a rejected one never moved at all.
+  if (sentAt) { sentAt = 0; dirty.clear(); count(); }
+  const y = window.scrollY;                    // the rebuild would otherwise throw you back to the top
+  await loadSettings(meta.params);
+  window.scrollTo(0, y);
 }
 
-pollRender();
+// A held connection rather than a poll: a finished render used to sit unseen for up to 3s, which was
+// the largest slice of the round trip. EventSource reconnects on its own. `since=3h` replays the
+// newest render on a cold load and no further - an older message points at an expired attachment.
+new EventSource(`${RELAY}-r/sse?since=3h`).onmessage = e => {
+  try { onRender(JSON.parse(e.data)); } catch {}
+};
 </script>
 </body>
 </html>
