@@ -80,7 +80,7 @@
                      autocapitalize="off" spellcheck="false"></div>
 <div id="list"><div id="msg">loading settings…</div></div>
 
-<footer><span id="n">no changes</span><button id="copy" disabled>copy changes</button></footer>
+<footer><span id="n">no changes</span><button id="copy" disabled>send</button></footer>
 
 <script>
 const $ = s => document.querySelector(s);
@@ -188,10 +188,26 @@ function count() {
   $('#copy').disabled = !dirty.size;
 }
 
+// Posted to a public relay that accepts anonymous writes, which is what lets this work without a
+// token in the page. A watcher on the machine picks it up, applies it and publishes a new render.
+const RELAY = 'https://ntfy.sh/cpd-fefd95de22fb';
+
 $('#copy').onclick = async () => {
   const text = [...dirty].map(([name, d]) => `${name} = ${'on' in d ? (d.on ? 'on' : 'off') : d.value}`).join('\n');
-  try { await navigator.clipboard.writeText(text); $('#n').textContent = `copied ${dirty.size} — paste to Claude`; }
-  catch { prompt('copy this:', text); }        // clipboard needs a gesture + secure context
+  const btn = $('#copy');
+  btn.disabled = true;
+  $('#n').textContent = 'sending…';
+  try {
+    const r = await fetch(RELAY, { method: 'POST', body: text });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    sentAt = Date.now();
+    $('#n').textContent = `sent ${dirty.size} — rendering`;
+  } catch (e) {
+    // If the relay is unreachable the work isn't lost: hand it over to be pasted instead.
+    $('#n').textContent = 'send failed — copy instead';
+    btn.disabled = false;
+    try { await navigator.clipboard.writeText(text); } catch { prompt('copy this:', text); }
+  }
 };
 
 $('#q').addEventListener('input', e => data && render(e.target.value));
@@ -199,17 +215,27 @@ $('#q').addEventListener('input', e => data && render(e.target.value));
 /* ---------- live render -------------------------------------------------------------------------- */
 
 // A few bytes of state carry the newest capture's stamp; the PNG is only refetched when it moves.
-let shown = null;
+let shown = null, sentAt = 0;
 async function pollRender() {
   try {
     const r = await fetch(`${LIVE}/state.json?t=${Date.now()}`, { cache: 'no-store' });
     if (r.ok) {
       const s = await r.json();
       if (s.stamp && s.stamp !== shown) {
+        const first = shown === null;
         shown = s.stamp;
         $('#shot').src = `${LIVE}/shot.png?t=${encodeURIComponent(s.stamp)}`;
         $('#render').classList.remove('empty');
         $('#rmeta').textContent = s.note ? `${s.note} · ${s.stamp}` : s.stamp;
+        // A render landing after a send means the game has taken those changes. Reload the settings
+        // so the sliders read the game's real values - a knob snaps to its step, and a rejected one
+        // never moved at all.
+        if (!first && sentAt) {
+          sentAt = 0;
+          dirty.clear();
+          await loadSettings();
+          count();
+        }
       }
     }
   } catch {}
