@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -78,7 +78,7 @@
 
 <div id="bar"><input id="q" type="search" placeholder="search settings" autocomplete="off"
                      autocapitalize="off" spellcheck="false"></div>
-<div id="list"><div id="msg">loading settings…</div></div>
+<div id="list"><div id="msg">loading settingsâ€¦</div></div>
 
 <footer><span id="n">no changes</span><button id="copy" disabled>send</button></footer>
 
@@ -90,16 +90,16 @@ const dirty = new Map();
 
 /* ---------- settings ---------------------------------------------------------------------------- */
 
-async function loadSettings() {
+async function loadSettings(file) {
   try {
-    const r = await fetch(`${LIVE}/params.json?t=${Date.now()}`, { cache: 'no-store' });
+    const r = await fetch(`${LIVE}/${file}`, { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     if (!d || !Array.isArray(d.sections)) throw new Error('unexpected shape');
     data = d;
-    render();
+    render($('#q').value);
   } catch (e) {
-    $('#msg').textContent = 'no settings published yet — ask for a set and reload';
+    $('#msg').textContent = 'could not load settings: ' + e.message;
   }
 }
 
@@ -196,15 +196,15 @@ $('#copy').onclick = async () => {
   const text = [...dirty].map(([name, d]) => `${name} = ${'on' in d ? (d.on ? 'on' : 'off') : d.value}`).join('\n');
   const btn = $('#copy');
   btn.disabled = true;
-  $('#n').textContent = 'sending…';
+  $('#n').textContent = 'sendingâ€¦';
   try {
     const r = await fetch(RELAY, { method: 'POST', body: text });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     sentAt = Date.now();
-    $('#n').textContent = `sent ${dirty.size} — rendering`;
+    $('#n').textContent = `sent ${dirty.size} â€” rendering`;
   } catch (e) {
     // If the relay is unreachable the work isn't lost: hand it over to be pasted instead.
-    $('#n').textContent = 'send failed — copy instead';
+    $('#n').textContent = 'send failed â€” copy instead';
     btn.disabled = false;
     try { await navigator.clipboard.writeText(text); } catch { prompt('copy this:', text); }
   }
@@ -215,35 +215,37 @@ $('#q').addEventListener('input', e => data && render(e.target.value));
 /* ---------- live render -------------------------------------------------------------------------- */
 
 // A few bytes of state carry the newest capture's stamp; the PNG is only refetched when it moves.
-let shown = null, sentAt = 0;
+// Filenames arrive over the relay rather than from an index file, because raw.githubusercontent
+// caches a path for 300s and ignores query strings - polling a fixed name would show a render up to
+// five minutes late. Every capture publishes new names, and a new path is never cached.
+let sentAt = 0, since = '12h';
+
 async function pollRender() {
   try {
-    const r = await fetch(`${LIVE}/state.json?t=${Date.now()}`, { cache: 'no-store' });
-    if (r.ok) {
-      const s = await r.json();
-      if (s.stamp && s.stamp !== shown) {
-        const first = shown === null;
-        shown = s.stamp;
-        $('#shot').src = `${LIVE}/shot.png?t=${encodeURIComponent(s.stamp)}`;
+    const r = await fetch(`${RELAY}-r/json?poll=1&since=${since}`, { cache: 'no-store' });
+    const text = (await r.text()).trim();
+    if (text) {
+      // On a cold load `since=12h` replays the backlog; only the newest describes the current state.
+      const msgs = text.split('\n').map(l => JSON.parse(l)).filter(m => m.event === 'message');
+      if (msgs.length) {
+        const last = msgs[msgs.length - 1];
+        since = last.time + 1;
+        const m = JSON.parse(last.message);
+        $('#shot').src = `${LIVE}/${m.shot}`;
         $('#render').classList.remove('empty');
-        $('#rmeta').textContent = s.note ? `${s.note} · ${s.stamp}` : s.stamp;
-        // A render landing after a send means the game has taken those changes. Reload the settings
-        // so the sliders read the game's real values - a knob snaps to its step, and a rejected one
-        // never moved at all.
-        if (!first && sentAt) {
-          sentAt = 0;
-          dirty.clear();
-          await loadSettings();
-          count();
-        }
+        $('#rmeta').textContent = m.note ? `${m.note} Â· ${m.stamp}` : m.stamp;
+        // The game has taken the changes, so the sliders reload to its real values: a knob snaps to
+        // its step, and a rejected one never moved at all.
+        if (sentAt) { sentAt = 0; dirty.clear(); count(); }
+        await loadSettings(m.params);
       }
     }
   } catch {}
   setTimeout(pollRender, 3000);
 }
 
-loadSettings();
 pollRender();
 </script>
 </body>
 </html>
+
