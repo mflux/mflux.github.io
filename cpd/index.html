@@ -87,6 +87,7 @@ const $ = s => document.querySelector(s);
 const LIVE = 'https://raw.githubusercontent.com/mflux/mflux.github.io/master/cpd/live';
 let data = null;
 const dirty = new Map();
+const open = new Set();     // section titles left open, so a rebuild doesn't shut them
 
 /* ---------- settings ---------------------------------------------------------------------------- */
 
@@ -127,14 +128,20 @@ function render(query = '') {
                    + `<span><span class="c">${changed ? changed + ' changed ' : ''}</span>`
                    + `<span class="n">${s.knobs.length + s.toggles.length}</span></span>`;
     const body = document.createElement('div');
-    body.hidden = true;
+    const build = () => {
+      if (body.dataset.built) return;
+      for (const k of s.knobs) body.append(knobRow(k));
+      for (const t of s.toggles) body.append(toggleRow(t));
+      body.dataset.built = '1';
+    };
+    // Which sections are open is remembered across a rebuild: a render reloads the settings, and
+    // having the folder you were working in shut itself every time is unusable.
+    body.hidden = !open.has(s.title);
+    if (!body.hidden) build();
     head.onclick = () => {
-      if (!body.dataset.built) {
-        for (const k of s.knobs) body.append(knobRow(k));
-        for (const t of s.toggles) body.append(toggleRow(t));
-        body.dataset.built = '1';
-      }
-      body.hidden = !body.hidden;
+      const show = body.hidden;
+      if (show) { build(); open.add(s.title); } else open.delete(s.title);
+      body.hidden = !show;
     };
     list.append(head, body);
   }
@@ -237,7 +244,9 @@ async function pollRender() {
         // The game has taken the changes, so the sliders reload to its real values: a knob snaps to
         // its step, and a rejected one never moved at all.
         if (sentAt) { sentAt = 0; dirty.clear(); count(); }
+        const y = window.scrollY;              // the rebuild would otherwise throw you back to the top
         await loadSettings(m.params);
+        window.scrollTo(0, y);
       }
     }
   } catch {}
