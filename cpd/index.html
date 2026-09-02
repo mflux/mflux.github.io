@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="CPD knobs">
+<title>CPD knobs</title>
+<!--
+  A generic slider renderer. It is deliberately empty: it ships no knob names, no ranges and no
+  values, so hosting it publicly discloses nothing about the game. You paste a /params payload in
+  once, it lives in this browser's localStorage, and the page hands back only what you changed.
+-->
+<style>
+  :root { color-scheme: dark; --bg:#0a0c10; --ink:#c8d0dc; --dim:#7f8a9a; --line:#2c3542; --hot:#8fd0ff; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin:0; min-height:100%; background:var(--bg); color:var(--ink);
+               font:13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  body { padding: env(safe-area-inset-top) 0 calc(env(safe-area-inset-bottom) + 76px); }
+  header { position:sticky; top:0; z-index:2; background:var(--bg); border-bottom:1px solid var(--line); padding:10px; }
+  .r { display:flex; gap:8px; }
+  input, button, textarea { font:inherit; color:var(--ink); background:#1a1f28; border:1px solid var(--line);
+                            border-radius:8px; padding:10px 12px; min-height:44px; }
+  input[type=search] { flex:1; min-width:0; }
+  textarea { width:100%; height:34vh; }
+  button.p { background:#1d4f7a; border-color:#2f6f9f; }
+  .head { display:flex; justify-content:space-between; align-items:center; width:100%;
+          border:0; border-bottom:1px solid var(--line); border-radius:0; background:transparent;
+          padding:14px 12px; text-align:left; }
+  .head .n { color:var(--dim); font-size:11px; }
+  .row { padding:10px 12px 14px; border-bottom:1px solid #1c2430; }
+  .row.dirty { background:#111a24; box-shadow:inset 3px 0 0 var(--hot); }
+  .lab { display:flex; justify-content:space-between; gap:10px; align-items:baseline; }
+  .v { color:var(--hot); font-size:16px; }
+  .u { color:var(--dim); font-size:10px; }
+  input[type=range] { width:100%; height:44px; padding:0; border:0; background:transparent; }
+  .sw { display:flex; justify-content:space-between; align-items:center; }
+  .sw input { width:28px; height:28px; min-height:0; }
+  footer { position:fixed; left:0; right:0; bottom:0; z-index:3; background:#111620;
+           border-top:1px solid var(--line); padding:10px calc(env(safe-area-inset-right) + 10px)
+           calc(env(safe-area-inset-bottom) + 10px) calc(env(safe-area-inset-left) + 10px); display:flex; gap:8px; align-items:center; }
+  #n { flex:1; color:var(--dim); }
+  #setup { padding:12px; }
+  .hide { display:none !important; }
+  h1 { font-size:14px; margin:0 0 8px; font-weight:600; }
+  p.help { color:var(--dim); margin:0 0 10px; }
+</style>
+</head>
+<body>
+
+<div id="setup">
+  <h1>CPD knobs</h1>
+  <p class="help">Paste the <code>/params</code> JSON. It stays in this browser and is never uploaded.</p>
+  <textarea id="raw" placeholder='{"sections":[...]}' autocomplete="off" spellcheck="false"></textarea>
+  <div class="r" style="margin-top:8px"><button class="p" id="loadBtn">load</button></div>
+  <p class="help" id="setupErr"></p>
+</div>
+
+<header class="hide" id="hdr">
+  <div class="r">
+    <input id="q" type="search" placeholder="search" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <button id="reset">reset</button>
+  </div>
+</header>
+
+<div id="list"></div>
+
+<footer class="hide" id="foot">
+  <span id="n">no changes</span>
+  <button class="p" id="copy">copy changes</button>
+</footer>
+
+<script>
+const $ = s => document.querySelector(s);
+const KEY = 'cpd.params';
+let data = null;
+const dirty = new Map();          // name -> {value} | {on}
+
+/* ---------- load ------------------------------------------------------------------------------ */
+
+function boot(text, remember) {
+  let d;
+  try { d = JSON.parse(text); } catch (e) { $('#setupErr').textContent = 'not JSON: ' + e.message; return; }
+  if (!d || !Array.isArray(d.sections)) { $('#setupErr').textContent = 'expected {"sections":[...]}'; return; }
+  data = d;
+  if (remember) localStorage.setItem(KEY, text);
+  $('#setup').classList.add('hide');
+  $('#hdr').classList.remove('hide');
+  $('#foot').classList.remove('hide');
+  render();
+}
+
+$('#loadBtn').onclick = () => boot($('#raw').value.trim(), true);
+$('#reset').onclick = () => {
+  if (!confirm('Forget the pasted params and all unsent changes?')) return;
+  localStorage.removeItem(KEY); location.reload();
+};
+
+/* ---------- render ---------------------------------------------------------------------------- */
+
+function render(query = '') {
+  const list = $('#list');
+  list.innerHTML = '';
+  const q = query.trim().toLowerCase();
+
+  if (q.length >= 2) {
+    let n = 0;
+    for (const s of data.sections) {
+      for (const k of s.knobs)   if (k.name.toLowerCase().includes(q) && n++ < 80) list.append(knobRow(k, s.title));
+      for (const t of s.toggles) if (t.name.toLowerCase().includes(q) && n++ < 80) list.append(toggleRow(t, s.title));
+    }
+    if (!n) list.innerHTML = '<div class="row">nothing matches</div>';
+    return;
+  }
+
+  // Hundreds of controls: a section's rows are built only when it is opened.
+  for (const s of data.sections) {
+    const head = document.createElement('button');
+    head.className = 'head';
+    const changed = [...s.knobs, ...s.toggles].filter(c => dirty.has(c.name)).length;
+    head.innerHTML = `<span>${esc(s.title)}${changed ? ` <span class="v">${changed}*</span>` : ''}</span>`
+                   + `<span class="n">${s.knobs.length + s.toggles.length}</span>`;
+    const body = document.createElement('div');
+    body.className = 'hide';
+    head.onclick = () => {
+      if (!body.dataset.built) {
+        for (const k of s.knobs) body.append(knobRow(k));
+        for (const t of s.toggles) body.append(toggleRow(t));
+        body.dataset.built = '1';
+      }
+      body.classList.toggle('hide');
+    };
+    list.append(head, body);
+  }
+}
+
+const esc = s => String(s).replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+const fmt = (x, k) => `${(+x).toFixed(3).replace(/\.?0+$/, '')}${k.unit ? ' ' + k.unit : ''}`;
+
+function knobRow(k, section) {
+  const row = document.createElement('div');
+  row.className = 'row' + (dirty.has(k.name) ? ' dirty' : '');
+  row.innerHTML = `<div class="lab"><span>${esc(k.name)}`
+                + `${section ? ` <span class="u">${esc(section)}</span>` : ''}</span><span class="v"></span></div>`;
+  const out = row.querySelector('.v');
+  const cur = dirty.has(k.name) ? dirty.get(k.name).value : k.value;
+
+  const sl = document.createElement('input');
+  Object.assign(sl, { type: 'range', min: k.min, max: k.max, step: k.step || 0.001, value: cur });
+  out.textContent = fmt(cur, k);
+
+  sl.addEventListener('input', () => {
+    out.textContent = fmt(sl.value, k);
+    if (+sl.value === k.value) dirty.delete(k.name); else dirty.set(k.name, { value: +sl.value });
+    row.classList.toggle('dirty', dirty.has(k.name));
+    count();
+  });
+  row.append(sl);
+  return row;
+}
+
+function toggleRow(t, section) {
+  const row = document.createElement('div');
+  row.className = 'row sw' + (dirty.has(t.name) ? ' dirty' : '');
+  row.innerHTML = `<span>${esc(t.name)}${section ? ` <span class="u">${esc(section)}</span>` : ''}</span>`;
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  box.checked = dirty.has(t.name) ? dirty.get(t.name).on : t.on;
+  box.onchange = () => {
+    if (box.checked === t.on) dirty.delete(t.name); else dirty.set(t.name, { on: box.checked });
+    row.classList.toggle('dirty', dirty.has(t.name));
+    count();
+  };
+  row.append(box);
+  return row;
+}
+
+/* ---------- hand back ------------------------------------------------------------------------- */
+
+function count() {
+  $('#n').textContent = dirty.size ? `${dirty.size} changed` : 'no changes';
+}
+
+// Only the deltas, one per line, in the order they were touched. Terse on purpose: this gets
+// pasted into a chat message, not parsed by a machine that cares about quoting.
+function changeText() {
+  const out = [];
+  for (const [name, d] of dirty) out.push(`${name} = ${'on' in d ? (d.on ? 'on' : 'off') : d.value}`);
+  return out.join('\n');
+}
+
+$('#copy').onclick = async () => {
+  if (!dirty.size) return;
+  const text = changeText();
+  try { await navigator.clipboard.writeText(text); $('#n').textContent = 'copied ' + dirty.size; }
+  catch { prompt('copy this:', text); }        // clipboard needs a secure context + gesture; fall back
+};
+
+$('#q').addEventListener('input', e => data && render(e.target.value));
+
+const saved = localStorage.getItem(KEY);
+if (saved) boot(saved, false);
+</script>
+</body>
+</html>
