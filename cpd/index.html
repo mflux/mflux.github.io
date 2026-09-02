@@ -285,9 +285,22 @@ document.addEventListener('touchend', () => {
 // A held connection rather than a poll: a finished render used to sit unseen for up to 3s, which was
 // the largest slice of the round trip. EventSource reconnects on its own. `since=3h` replays the
 // newest render on a cold load and no further - an older message points at an expired attachment.
+let seenRender = false;
 new EventSource(`${RELAY}-r/sse?since=3h`).onmessage = e => {
-  try { onRender(JSON.parse(e.data)); } catch {}
+  try { const m = JSON.parse(e.data); if (m.attachment?.name === 'shot.jpg') seenRender = true; onRender(m); }
+  catch {}
 };
+
+// Nothing replayed means the backlog aged out or the desktop restarted. Ask for the current state
+// rather than sitting on "loading settings" forever, and say so plainly if nobody answers.
+setTimeout(() => {
+  if (seenRender) return;
+  $('#msg').textContent = 'asking the game for its current state…';
+  fetch(RELAY, { method: 'POST', body: 'ping' }).catch(() => {});
+  setTimeout(() => {
+    if (!seenRender) $('#msg').textContent = 'no answer — is the game running with --remote, and the watcher up?';
+  }, 12000);
+}, 4000);
 </script>
 </body>
 </html>
